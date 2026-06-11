@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: inventory-backend
+    runtime: node
+    repo: https://github.com/abhishek21lift-oss/inventory-backend
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20
