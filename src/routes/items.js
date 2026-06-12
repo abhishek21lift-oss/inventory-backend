@@ -6,7 +6,8 @@ const router = Router()
 function rowToItem(r) {
   return {
     id: r[0], name: r[1], sku: r[2], category: r[3],
-    quantity: r[4], minStock: r[5], price: r[6], createdAt: r[7],
+    quantity: r[4], minStock: r[5], price: r[6],
+    brand: r[7], location: r[8], condition: r[9], createdAt: r[10],
   }
 }
 
@@ -18,19 +19,20 @@ router.get('/', (req, res) => {
 })
 
 router.post('/', (req, res) => {
-  const { id, name, sku, category, quantity, minStock, price, createdAt } = req.body
+  const { id, name, sku, category, quantity, minStock, price, brand, location, condition, createdAt } = req.body
   const db = getDb()
-  db.run('INSERT INTO items VALUES (?,?,?,?,?,?,?,?)', [id, name, sku, category, quantity, minStock, price, createdAt])
+  db.run('INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    [id, name, sku, category, quantity, minStock, price, brand || '', location || '', condition || 'New', createdAt])
   flush()
-  res.status(201).json({ id, name, sku, category, quantity, minStock, price, createdAt })
+  res.status(201).json({ id, name, sku, category, quantity, minStock, price, brand, location, condition, createdAt })
 })
 
 router.put('/:id', (req, res) => {
-  const { name, sku, category, quantity, minStock, price } = req.body
+  const { name, sku, category, quantity, minStock, price, brand, location, condition } = req.body
   const db = getDb()
   const result = db.run(
-    'UPDATE items SET name=?, sku=?, category=?, quantity=?, min_stock=?, price=? WHERE id=?',
-    [name, sku, category, quantity, minStock, price, req.params.id]
+    'UPDATE items SET name=?, sku=?, category=?, quantity=?, min_stock=?, price=?, brand=?, location=?, condition=? WHERE id=?',
+    [name, sku, category, quantity, minStock, price, brand || '', location || '', condition || 'New', req.params.id]
   )
   if (result.changes === 0) return res.status(404).json({ error: 'Not found' })
   flush()
