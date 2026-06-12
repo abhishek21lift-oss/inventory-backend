@@ -6,7 +6,11 @@ const router = Router()
 router.get('/', (req, res) => {
   const db = getDb()
   const rows = db.exec('SELECT * FROM categories ORDER BY name')
-  const cats = rows.length ? rows[0].values.map(r => ({ id: r[0], name: r[1] })) : []
+  const cats = rows.length ? rows[0].values.map(r => {
+    const countRows = db.exec('SELECT COUNT(*) FROM items WHERE category=?', [r[1]])
+    const count = countRows.length ? countRows[0].values[0][0] : 0
+    return { id: r[0], name: r[1], items_count: count }
+  }) : []
   res.json(cats)
 })
 
