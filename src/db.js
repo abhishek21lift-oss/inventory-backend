@@ -2,12 +2,15 @@ import pg from 'pg'
 import bcrypt from 'bcryptjs'
 
 const DATABASE_URL = process.env.DATABASE_URL
-
 let pool
 
 export async function initDb() {
   if (!DATABASE_URL) {
-    throw new Error('DATABASE_URL environment variable is required')
+    throw new Error(
+      'DATABASE_URL environment variable is required. ' +
+      'Set it to your PostgreSQL connection string. ' +
+      'Example: postgresql://user:pass@host:6543/postgres'
+    )
   }
 
   pool = new pg.Pool({
@@ -17,7 +20,6 @@ export async function initDb() {
     idleTimeoutMillis: 30000,
   })
 
-  // Verify connection
   const client = await pool.connect()
   try {
     await client.query('SELECT 1')
@@ -26,8 +28,7 @@ export async function initDb() {
     client.release()
   }
 
-  // Seed admin user
-  const { rows } = await pool.query('SELECT COUNT(*)::int as c FROM users')
+  const { rows } = await pool.query("SELECT COUNT(*)::int as c FROM users")
   if (rows[0].c === 0) {
     const adminEmail = process.env.ADMIN_EMAIL || 'admin@inventory.com'
     const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
