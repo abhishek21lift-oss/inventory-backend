@@ -1,187 +1,287 @@
 import { Router } from 'express'
-import { getDb, flush } from '../db.js'
+import { getDb } from '../db.js'
 import { authMiddleware } from '../middleware/auth.js'
+import { getPagination, paginatedResponse } from '../utils/pagination.js'
 
 const router = Router()
 router.use(authMiddleware)
 
 function rowToItem(r) {
   return {
-    id: r[0], name: r[1], sku: r[2], category: r[3],
-    quantity: r[4], minStock: r[5], price: r[6],
-    brand: r[7], location: r[8], condition: r[9], createdAt: r[10], updatedAt: r[11],
+    id: r.id, name: r.name, sku: r.sku, category: r.category,
+    quantity: r.quantity, minStock: r.min_stock, price: r.price,
+    brand: r.brand, location: r.location, condition: r.condition,
+    createdAt: r.created_at, updatedAt: r.updated_at,
   }
 }
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const db = getDb()
   const { search, category, condition, warehouseId } = req.query
-  let sql = 'SELECT * FROM items WHERE 1=1'
+  const { page, limit, offset } = getPagination(req)
+
+  const conditions = []
   const params = []
+  let p = 1
+
   if (search) {
-    sql += ' AND (LOWER(name) LIKE ? OR LOWER(sku) LIKE ? OR LOWER(brand) LIKE ?)'
     const q = `%${search.toString().toLowerCase()}%`
+    conditions.push(` AND (LOWER(name) LIKE $${p} OR LOWER(sku) LIKE $${p + 1} OR LOWER(brand) LIKE $${p + 2})`)
     params.push(q, q, q)
+    p += 3
   }
-  if (category) { sql += ' AND category=?'; params.push(category.toString()) }
-  if (condition) { sql += ' AND condition=?'; params.push(condition.toString()) }
-  sql += ' ORDER BY updated_at DESC'
-  const rows = db.exec(sql, params)
-  let items = rows.length ? rows[0].values.map(rowToItem) : []
+  if (category) {
+    conditions.push(` AND category=$${p}`)
+    params.push(category.toString())
+    p++
+  }
+  if (condition) {
+    conditions.push(` AND condition=$${p}`)
+    params.push(condition.toString())
+    p++
+  }
 
-  // If filtering by warehouse, only include items with stock in that warehouse
+  const where = conditions.join('')
+
+  const countResult = await db.query(`SELECT COUNT(*)::int AS count FROM items WHERE 1=1${where}`, params)
+  const total = countResult.rows[0].count
+
+  const result = await db.query(
+    `SELECT * FROM items WHERE 1=1${where} ORDER BY updated_at DESC LIMIT $${p} OFFSET $${p + 1}`,
+    [...params, limit, offset]
+  )
+  let items = result.rows.map(rowToItem)
+
   if (warehouseId) {
-    items = items.filter(item => {
-      const iw = db.exec('SELECT SUM(quantity) FROM item_warehouses WHERE item_id=? AND warehouse_id=?', [item.id, warehouseId])
-      const whQty = iw.length && iw[0].values[0][0] ? iw[0].values[0][0] : 0
-      item.warehouseStock = whQty
-      return true
-    })
+    const filtered = []
+    for (const item of items) {
+      const iw = await db.query(
+        'SELECT COALESCE(SUM(quantity),0)::int AS qty FROM item_warehouses WHERE item_id=$1 AND warehouse_id=$2',
+        [item.id, warehouseId]
+      )
+      const whQty = iw.rows[0].qty
+      item.warehouseStock = { [warehouseId.toString()]: whQty }
+      if (whQty > 0) filtered.push(item)
+    }
+    items = filtered
   } else {
-    // Include warehouse stock info for every item
-    items = items.map(item => {
-      const iw = db.exec('SELECT warehouse_id, quantity FROM item_warehouses WHERE item_id=?', [item.id])
-      const warehouseStock = iw.length ? iw[0].values.reduce((acc, r) => {
-        acc[r[0]] = r[1]
+    for (const item of items) {
+      const iw = await db.query(
+        'SELECT warehouse_id, quantity FROM item_warehouses WHERE item_id=$1',
+        [item.id]
+      )
+      item.warehouseStock = iw.rows.reduce((acc, r) => {
+        acc[r.warehouse_id] = r.quantity
         return acc
-      }, {}) : {}
-      item.warehouseStock = warehouseStock
-      return item
-    })
+      }, {})
+    }
   }
 
-  res.json(items)
+  res.json(paginatedResponse(items, total, page, limit))
 })
 
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   const db = getDb()
-  const rows = db.exec('SELECT * FROM items WHERE id=?', [req.params.id])
-  if (!rows.length || !rows[0].values.length) return res.status(404).json({ error: 'Not found' })
-  const item = rowToItem(rows[0].values[0])
-  const iw = db.exec('SELECT warehouse_id, quantity FROM item_warehouses WHERE item_id=?', [item.id])
-  item.warehouseStock = iw.length ? iw[0].values.reduce((acc, r) => { acc[r[0]] = r[1]; return acc }, {}) : {}
+  const result = await db.query('SELECT * FROM items WHERE id=$1', [req.params.id])
+  if (!result.rows.length) return res.status(404).json({ error: 'Not found' })
+  const item = rowToItem(result.rows[0])
+  const iw = await db.query(
+    'SELECT warehouse_id, quantity FROM item_warehouses WHERE item_id=$1',
+    [item.id]
+  )
+  item.warehouseStock = iw.rows.reduce((acc, r) => {
+    acc[r.warehouse_id] = r.quantity
+    return acc
+  }, {})
   res.json(item)
 })
 
-router.post('/', (req, res) => {
-  const { id, name, sku, category, quantity, minStock, price, brand, location, condition, createdAt } = req.body
-  const now = new Date().toISOString()
+router.post('/', async (req, res) => {
+  const { id, name, sku, category, quantity, minStock, price, brand, location, condition, createdAt, warehouseId } = req.body
+  if (!warehouseId) return res.status(400).json({ error: 'warehouseId is required' })
   const db = getDb()
-  db.run('INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-    [id, name, sku, category, quantity || 0, minStock || 1, price || 0, brand || '', location || '', condition || 'New', createdAt || now.slice(0, 10), now])
-  // Link to default warehouse
-  const whId = req.body.warehouseId || 'wh1'
+  const whResult = await db.query('SELECT id FROM warehouses WHERE id=$1', [warehouseId])
+  if (!whResult.rows.length) return res.status(400).json({ error: 'Warehouse not found' })
+  const now = new Date().toISOString()
+  await db.query(
+    'INSERT INTO items (id, name, sku, category, quantity, min_stock, price, brand, location, condition, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+    [id, name, sku, category, quantity || 0, minStock || 1, price || 0, brand || '', location || '', condition || 'New', createdAt || now.slice(0, 10), now]
+  )
   const iwId = Date.now().toString(36) + Math.random().toString(36).slice(2, 4)
-  db.run('INSERT INTO item_warehouses VALUES (?,?,?,?)', [iwId, id, whId, quantity || 0])
-  flush()
-  res.status(201).json({ id, name, sku, category, quantity: quantity || 0, minStock: minStock || 1, price: price || 0, brand, location, condition, createdAt: createdAt || now.slice(0, 10), updatedAt: now })
+  await db.query(
+    'INSERT INTO item_warehouses (id, item_id, warehouse_id, quantity) VALUES ($1,$2,$3,$4)',
+    [iwId, id, warehouseId, quantity || 0]
+  )
+  res.status(201).json({
+    id, name, sku, category, quantity: quantity || 0, minStock: minStock || 1, price: price || 0,
+    brand, location, condition, createdAt: createdAt || now.slice(0, 10), updatedAt: now,
+  })
 })
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { name, sku, category, quantity, minStock, price, brand, location, condition } = req.body
   const now = new Date().toISOString()
   const db = getDb()
-  db.run(
-    'UPDATE items SET name=?, sku=?, category=?, quantity=?, min_stock=?, price=?, brand=?, location=?, condition=?, updated_at=? WHERE id=?',
+  await db.query(
+    'UPDATE items SET name=$1, sku=$2, category=$3, quantity=$4, min_stock=$5, price=$6, brand=$7, location=$8, condition=$9, updated_at=$10 WHERE id=$11',
     [name, sku, category, quantity, minStock, price, brand || '', location || '', condition || 'New', now, req.params.id]
   )
-  flush()
   res.json({ message: 'Updated', updatedAt: now })
 })
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   const db = getDb()
-  db.run('DELETE FROM stock_history WHERE item_id=?', [req.params.id])
-  db.run('DELETE FROM item_warehouses WHERE item_id=?', [req.params.id])
-  db.run('DELETE FROM items WHERE id=?', [req.params.id])
-  flush()
+  await db.query('DELETE FROM stock_history WHERE item_id=$1', [req.params.id])
+  await db.query('DELETE FROM item_warehouses WHERE item_id=$1', [req.params.id])
+  await db.query('DELETE FROM items WHERE id=$1', [req.params.id])
   res.json({ message: 'Deleted' })
 })
 
-router.patch('/:id/stock', (req, res) => {
+router.patch('/:id/stock', async (req, res) => {
   const { change, note, warehouseId } = req.body
   if (typeof change !== 'number' || change === 0) return res.status(400).json({ error: 'change must be a non-zero integer' })
   const db = getDb()
-  const rows = db.exec('SELECT quantity FROM items WHERE id=?', [req.params.id])
-  if (!rows.length || !rows[0].values.length) return res.status(404).json({ error: 'Not found' })
-  const currentQty = rows[0].values[0][0]
+  const result = await db.query('SELECT quantity FROM items WHERE id=$1', [req.params.id])
+  if (!result.rows.length) return res.status(404).json({ error: 'Not found' })
+  const currentQty = result.rows[0].quantity
   const newQty = Math.max(0, currentQty + change)
   const now = new Date().toISOString()
-  db.run('UPDATE items SET quantity=?, updated_at=? WHERE id=?', [newQty, now, req.params.id])
+  await db.query('UPDATE items SET quantity=$1, updated_at=$2 WHERE id=$3', [newQty, now, req.params.id])
   const historyId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-  db.run('INSERT INTO stock_history VALUES (?,?,?,?,?,?,?)',
-    [historyId, req.params.id, change, currentQty, newQty, note || '', now])
-  // Update warehouse stock if specified
+  await db.query(
+    'INSERT INTO stock_history (id, item_id, change, previous_qty, new_qty, note, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [historyId, req.params.id, change, currentQty, newQty, note || '', now]
+  )
   if (warehouseId) {
-    const iw = db.exec('SELECT id,quantity FROM item_warehouses WHERE item_id=? AND warehouse_id=?', [req.params.id, warehouseId])
-    if (iw.length && iw[0].values.length) {
-      const whNew = Math.max(0, iw[0].values[0][1] + change)
-      db.run('UPDATE item_warehouses SET quantity=? WHERE item_id=? AND warehouse_id=?', [whNew, req.params.id, warehouseId])
+    const iw = await db.query(
+      'SELECT id, quantity FROM item_warehouses WHERE item_id=$1 AND warehouse_id=$2',
+      [req.params.id, warehouseId]
+    )
+    if (iw.rows.length) {
+      const whNew = Math.max(0, iw.rows[0].quantity + change)
+      await db.query(
+        'UPDATE item_warehouses SET quantity=$1 WHERE item_id=$2 AND warehouse_id=$3',
+        [whNew, req.params.id, warehouseId]
+      )
     } else {
       const iwId = Date.now().toString(36) + Math.random().toString(36).slice(2, 4)
-      db.run('INSERT INTO item_warehouses VALUES (?,?,?,?)', [iwId, req.params.id, warehouseId, Math.max(0, change)])
+      await db.query(
+        'INSERT INTO item_warehouses (id, item_id, warehouse_id, quantity) VALUES ($1,$2,$3,$4)',
+        [iwId, req.params.id, warehouseId, Math.max(0, change)]
+      )
     }
   }
-  flush()
   res.json({ message: 'Stock updated', previousQty: currentQty, newQty, change, updatedAt: now })
 })
 
-router.post('/:id/duplicate', (req, res) => {
+router.post('/:id/duplicate', async (req, res) => {
   const db = getDb()
-  const rows = db.exec('SELECT * FROM items WHERE id=?', [req.params.id])
-  if (!rows.length || !rows[0].values.length) return res.status(404).json({ error: 'Not found' })
-  const orig = rowToItem(rows[0].values[0])
+  const result = await db.query('SELECT * FROM items WHERE id=$1', [req.params.id])
+  if (!result.rows.length) return res.status(404).json({ error: 'Not found' })
+  const orig = rowToItem(result.rows[0])
   const newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
   const now = new Date().toISOString()
   const today = now.slice(0, 10)
-  db.run('INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-    [newId, orig.name + ' (copy)', orig.sku + '-C', orig.category, 0, orig.minStock, orig.price,
-     orig.brand, orig.location, orig.condition, today, now])
-  flush()
-  const newItem = { ...orig, id: newId, name: orig.name + ' (copy)', sku: orig.sku + '-C', quantity: 0, createdAt: today, updatedAt: now }
+  await db.query(
+    'INSERT INTO items (id, name, sku, category, quantity, min_stock, price, brand, location, condition, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+    [newId, orig.name + ' (copy)', orig.sku + '-C', orig.category, 0, orig.minStock, orig.price, orig.brand, orig.location, orig.condition, today, now]
+  )
+  const newItem = {
+    ...orig, id: newId, name: orig.name + ' (copy)', sku: orig.sku + '-C',
+    quantity: 0, createdAt: today, updatedAt: now,
+  }
   res.status(201).json(newItem)
 })
 
-router.get('/:id/history', (req, res) => {
+router.get('/:id/history', async (req, res) => {
   const db = getDb()
-  const rows = db.exec('SELECT * FROM stock_history WHERE item_id=? ORDER BY created_at DESC LIMIT 50', [req.params.id])
-  const history = rows.length ? rows[0].values.map(r => ({
-    id: r[0], itemId: r[1], change: r[2], previousQty: r[3], newQty: r[4], note: r[5], createdAt: r[6],
-  })) : []
-  res.json(history)
+  const { from, to, page: pageQ, limit: limitQ } = req.query
+  const page = Math.max(1, parseInt(pageQ) || 1)
+  const lmt = Math.min(Math.max(1, parseInt(limitQ) || 50), 500)
+  const offset = (page - 1) * lmt
+
+  const conditions = ['item_id=$1']
+  const params = [req.params.id]
+  let p = 2
+  if (from) {
+    conditions.push(`created_at >= $${p}`)
+    params.push(from.toString())
+    p++
+  }
+  if (to) {
+    conditions.push(`created_at <= $${p}`)
+    params.push(to.toString())
+    p++
+  }
+
+  const where = conditions.join(' AND ')
+
+  const countResult = await db.query(`SELECT COUNT(*)::int AS count FROM stock_history WHERE ${where}`, params)
+  const total = countResult.rows[0].count
+
+  const result = await db.query(
+    `SELECT * FROM stock_history WHERE ${where} ORDER BY created_at DESC LIMIT $${p} OFFSET $${p + 1}`,
+    [...params, lmt, offset]
+  )
+  const history = result.rows.map(r => ({
+    id: r.id, itemId: r.item_id, change: r.change,
+    previousQty: r.previous_qty, newQty: r.new_qty, note: r.note, createdAt: r.created_at,
+  }))
+  res.json({ data: history, total, page, limit: lmt, totalPages: Math.ceil(total / lmt) })
 })
 
-router.get('/:id/warehouses', (req, res) => {
+router.get('/:id/warehouses', async (req, res) => {
   const db = getDb()
-  const rows = db.exec(`
+  const result = await db.query(`
     SELECT iw.warehouse_id, w.name, iw.quantity
     FROM item_warehouses iw
     JOIN warehouses w ON w.id = iw.warehouse_id
-    WHERE iw.item_id=?
+    WHERE iw.item_id=$1
   `, [req.params.id])
-  const stock = rows.length ? rows[0].values.map(r => ({ warehouseId: r[0], warehouseName: r[1], quantity: r[2] })) : []
+  const stock = result.rows.map(r => ({ warehouseId: r.warehouse_id, warehouseName: r.name, quantity: r.quantity }))
   res.json(stock)
 })
 
-router.post('/:id/transfer', (req, res) => {
+router.post('/:id/transfer', async (req, res) => {
   const { fromWarehouseId, toWarehouseId, quantity } = req.body
-  if (!fromWarehouseId || !toWarehouseId || !quantity || quantity <= 0) return res.status(400).json({ error: 'fromWarehouseId, toWarehouseId, and quantity required' })
+  if (!fromWarehouseId || !toWarehouseId || !quantity || quantity <= 0) {
+    return res.status(400).json({ error: 'fromWarehouseId, toWarehouseId, and quantity required' })
+  }
   const db = getDb()
-  const from = db.exec('SELECT id,quantity FROM item_warehouses WHERE item_id=? AND warehouse_id=?', [req.params.id, fromWarehouseId])
-  if (!from.length || !from[0].values.length || from[0].values[0][1] < quantity) return res.status(400).json({ error: 'Insufficient stock in source warehouse' })
-  db.run('UPDATE item_warehouses SET quantity=quantity-? WHERE item_id=? AND warehouse_id=?', [quantity, req.params.id, fromWarehouseId])
-  const to = db.exec('SELECT id FROM item_warehouses WHERE item_id=? AND warehouse_id=?', [req.params.id, toWarehouseId])
-  if (to.length && to[0].values.length) {
-    db.run('UPDATE item_warehouses SET quantity=quantity+? WHERE item_id=? AND warehouse_id=?', [quantity, req.params.id, toWarehouseId])
+  const from = await db.query(
+    'SELECT id, quantity FROM item_warehouses WHERE item_id=$1 AND warehouse_id=$2',
+    [req.params.id, fromWarehouseId]
+  )
+  if (!from.rows.length || from.rows[0].quantity < quantity) {
+    return res.status(400).json({ error: 'Insufficient stock in source warehouse' })
+  }
+  await db.query(
+    'UPDATE item_warehouses SET quantity=quantity-$1 WHERE item_id=$2 AND warehouse_id=$3',
+    [quantity, req.params.id, fromWarehouseId]
+  )
+  const to = await db.query(
+    'SELECT id FROM item_warehouses WHERE item_id=$1 AND warehouse_id=$2',
+    [req.params.id, toWarehouseId]
+  )
+  if (to.rows.length) {
+    await db.query(
+      'UPDATE item_warehouses SET quantity=quantity+$1 WHERE item_id=$2 AND warehouse_id=$3',
+      [quantity, req.params.id, toWarehouseId]
+    )
   } else {
     const iwId = Date.now().toString(36) + Math.random().toString(36).slice(2, 4)
-    db.run('INSERT INTO item_warehouses VALUES (?,?,?,?)', [iwId, req.params.id, toWarehouseId, quantity])
+    await db.query(
+      'INSERT INTO item_warehouses (id, item_id, warehouse_id, quantity) VALUES ($1,$2,$3,$4)',
+      [iwId, req.params.id, toWarehouseId, quantity]
+    )
   }
   const now = new Date().toISOString()
-  db.run('UPDATE items SET updated_at=? WHERE id=?', [now, req.params.id])
+  await db.query('UPDATE items SET updated_at=$1 WHERE id=$2', [now, req.params.id])
   const aid = Date.now().toString(36) + Math.random().toString(36).slice(2, 4)
-  db.run('INSERT INTO activity_log VALUES (?,?,?,?,?,?,?,?)', [aid, req.user.id, req.user.name, 'Stock Transfer', 'items', req.params.id, `Transferred ${quantity} units from ${fromWarehouseId} to ${toWarehouseId}`, now])
-  flush()
+  await db.query(
+    'INSERT INTO activity_log (id, user_id, user_name, action, entity_type, entity_id, details, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+    [aid, req.user.id, req.user.name, 'Stock Transfer', 'items', req.params.id, `Transferred ${quantity} units from ${fromWarehouseId} to ${toWarehouseId}`, now]
+  )
   res.json({ message: 'Stock transferred' })
 })
 

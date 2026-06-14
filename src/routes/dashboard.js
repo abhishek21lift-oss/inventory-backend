@@ -5,46 +5,43 @@ import { authMiddleware } from '../middleware/auth.js'
 const router = Router()
 router.use(authMiddleware)
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const db = getDb()
 
-  const itemRows = db.exec('SELECT COUNT(*) as c FROM items')
-  const totalItems = itemRows.length ? itemRows[0].values[0][0] : 0
+  const { rows: itemRows } = await db.query('SELECT COUNT(*) AS count FROM items')
+  const totalItems = parseInt(itemRows[0].count)
 
-  const valRows = db.exec('SELECT SUM(quantity * price) FROM items')
-  const totalValue = valRows.length && valRows[0].values[0][0] ? valRows[0].values[0][0] : 0
+  const { rows: valRows } = await db.query('SELECT SUM(quantity * price) AS sum FROM items')
+  const totalValue = parseFloat(valRows[0].sum) || 0
 
-  const lowRows = db.exec("SELECT COUNT(*) FROM items WHERE quantity > 0 AND quantity <= min_stock")
-  const lowStock = lowRows.length ? lowRows[0].values[0][0] : 0
+  const { rows: lowRows } = await db.query("SELECT COUNT(*) AS count FROM items WHERE quantity > 0 AND quantity <= min_stock")
+  const lowStock = parseInt(lowRows[0].count)
 
-  const outRows = db.exec("SELECT COUNT(*) FROM items WHERE quantity = 0")
-  const outStock = outRows.length ? outRows[0].values[0][0] : 0
+  const { rows: outRows } = await db.query("SELECT COUNT(*) AS count FROM items WHERE quantity = 0")
+  const outStock = parseInt(outRows[0].count)
 
-  const poRows = db.exec("SELECT COUNT(*) FROM purchase_orders WHERE status='pending'")
-  const pendingPOs = poRows.length ? poRows[0].values[0][0] : 0
+  const { rows: poRows } = await db.query("SELECT COUNT(*) AS count FROM purchase_orders WHERE status = 'pending'")
+  const pendingPOs = parseInt(poRows[0].count)
 
-  const invRows = db.exec("SELECT COUNT(*) FROM invoices WHERE status='paid'")
-  const paidInvoices = invRows.length ? invRows[0].values[0][0] : 0
+  const { rows: invRows } = await db.query("SELECT COUNT(*) AS count FROM invoices WHERE status = 'paid'")
+  const paidInvoices = parseInt(invRows[0].count)
 
-  const whRows = db.exec("SELECT COUNT(*) FROM warehouses WHERE is_active=1")
-  const activeWarehouses = whRows.length ? whRows[0].values[0][0] : 0
+  const { rows: whRows } = await db.query("SELECT COUNT(*) AS count FROM warehouses WHERE is_active = true")
+  const activeWarehouses = parseInt(whRows[0].count)
 
-  const supRows = db.exec("SELECT COUNT(*) FROM suppliers WHERE is_active=1")
-  const activeSuppliers = supRows.length ? supRows[0].values[0][0] : 0
+  const { rows: supRows } = await db.query("SELECT COUNT(*) AS count FROM suppliers WHERE is_active = true")
+  const activeSuppliers = parseInt(supRows[0].count)
 
-  // Top low stock items
-  const lsRows = db.exec("SELECT name, quantity, min_stock, sku FROM items WHERE quantity > 0 AND quantity <= min_stock ORDER BY quantity ASC LIMIT 10")
-  const lowStockItems = lsRows.length ? lsRows[0].values.map(r => ({ name: r[0], quantity: r[1], minStock: r[2], sku: r[3] })) : []
+  const { rows: lsRows } = await db.query("SELECT name, quantity, min_stock, sku FROM items WHERE quantity > 0 AND quantity <= min_stock ORDER BY quantity ASC LIMIT 10")
+  const lowStockItems = lsRows.map(r => ({ name: r.name, quantity: r.quantity, minStock: r.min_stock, sku: r.sku }))
 
-  // Stock by category
-  const catRows = db.exec("SELECT category, SUM(quantity) as total FROM items GROUP BY category ORDER BY total DESC")
-  const stockByCategory = catRows.length ? catRows[0].values.map(r => ({ category: r[0], total: r[1] })) : []
+  const { rows: catRows } = await db.query("SELECT category, SUM(quantity) AS total FROM items GROUP BY category ORDER BY total DESC")
+  const stockByCategory = catRows.map(r => ({ category: r.category, total: parseFloat(r.total) || 0 }))
 
-  // Recent activity
-  const actRows = db.exec("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT 10")
-  const recentActivity = actRows.length ? actRows[0].values.map(r => ({
-    id: r[0], userName: r[2], action: r[3], entityType: r[4], details: r[6], createdAt: r[7],
-  })) : []
+  const { rows: actRows } = await db.query("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT 10")
+  const recentActivity = actRows.map(r => ({
+    id: r.id, userName: r.user_name, action: r.action, entityType: r.entity_type, details: r.details, createdAt: r.created_at,
+  }))
 
   res.json({
     totalItems, totalValue, lowStock, outStock,

@@ -1,44 +1,42 @@
 import { Router } from 'express'
-import { getDb, flush } from '../db.js'
+import { getDb } from '../db.js'
 import { authMiddleware } from '../middleware/auth.js'
 
 const router = Router()
 router.use(authMiddleware)
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const db = getDb()
-  const rows = db.exec('SELECT * FROM suppliers ORDER BY name')
-  const suppliers = rows.length ? rows[0].values.map(r => ({
-    id: r[0], name: r[1], contactPerson: r[2], email: r[3], phone: r[4],
-    address: r[5], isActive: !!r[6], createdAt: r[7],
-  })) : []
+  const { rows } = await db.query('SELECT * FROM suppliers ORDER BY name')
+  const suppliers = rows.map(r => ({
+    id: r.id, name: r.name, contactPerson: r.contact_person, email: r.email, phone: r.phone,
+    address: r.address, isActive: r.is_active, createdAt: r.created_at,
+  }))
   res.json(suppliers)
 })
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name, contactPerson, email, phone, address } = req.body
   if (!name) return res.status(400).json({ error: 'Name required' })
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
   const now = new Date().toISOString()
   const db = getDb()
-  db.run('INSERT INTO suppliers VALUES (?,?,?,?,?,?,?,?)', [id, name, contactPerson || '', email || '', phone || '', address || '', 1, now])
-  flush()
+  await db.query('INSERT INTO suppliers (id, name, contact_person, email, phone, address, is_active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+    [id, name, contactPerson || '', email || '', phone || '', address || '', true, now])
   res.status(201).json({ id, name, contactPerson: contactPerson || '', email: email || '', phone: phone || '', address: address || '', isActive: true, createdAt: now })
 })
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { name, contactPerson, email, phone, address, isActive } = req.body
   const db = getDb()
-  db.run('UPDATE suppliers SET name=?, contact_person=?, email=?, phone=?, address=?, is_active=? WHERE id=?',
-    [name, contactPerson || '', email || '', phone || '', address || '', isActive ? 1 : 0, req.params.id])
-  flush()
+  await db.query('UPDATE suppliers SET name = $1, contact_person = $2, email = $3, phone = $4, address = $5, is_active = $6 WHERE id = $7',
+    [name, contactPerson || '', email || '', phone || '', address || '', isActive, req.params.id])
   res.json({ message: 'Updated' })
 })
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   const db = getDb()
-  db.run('DELETE FROM suppliers WHERE id=?', [req.params.id])
-  flush()
+  await db.query('DELETE FROM suppliers WHERE id = $1', [req.params.id])
   res.json({ message: 'Deleted' })
 })
 
