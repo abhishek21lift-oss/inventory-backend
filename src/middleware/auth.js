@@ -1,9 +1,11 @@
 import jwt from 'jsonwebtoken'
+import crypto from 'crypto'
 
-if (!process.env.JWT_SECRET) {
-  throw new Error('JWT_SECRET environment variable is required')
-}
-const JWT_SECRET = process.env.JWT_SECRET
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  const generated = crypto.randomBytes(32).toString('hex')
+  console.warn('WARNING: JWT_SECRET not set. Using auto-generated secret. Set JWT_SECRET env var for persistent sessions.')
+  return generated
+})()
 
 export function generateToken(user) {
   return jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '24h' })
