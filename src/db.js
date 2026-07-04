@@ -28,17 +28,21 @@ export async function initDb() {
     client.release()
   }
 
-  const { rows } = await pool.query("SELECT COUNT(*)::int as c FROM users")
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@inventory.com'
+  const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
+  const adminName = process.env.ADMIN_NAME || 'Admin User'
+  const hash = bcrypt.hashSync(adminPassword, 10)
+
+  const { rows } = await pool.query("SELECT COUNT(*)::int as c FROM users WHERE email = $1", [adminEmail])
   if (rows[0].c === 0) {
-    const adminEmail = process.env.ADMIN_EMAIL || 'admin@inventory.com'
-    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
-    const adminName = process.env.ADMIN_NAME || 'Admin User'
-    const hash = bcrypt.hashSync(adminPassword, 10)
     await pool.query(
       'INSERT INTO users (email, password, name, role) VALUES ($1, $2, $3, $4)',
       [adminEmail, hash, adminName, 'admin']
     )
     console.log('Admin user seeded')
+  } else {
+    await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hash, adminEmail])
+    console.log('Admin password synced from env')
   }
 
   return pool
