@@ -14,7 +14,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGIN
-        value: https://your-digitallift.vercel.app
+        value: https://inventory-app-gold-psi.vercel.app
       - key: ADMIN_EMAIL
         value: admin@inventory.com
       - key: ADMIN_PASSWORD
