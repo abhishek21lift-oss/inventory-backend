@@ -20,8 +20,17 @@ const PORT = process.env.PORT || 3001
 
 app.use(helmet())
 app.use(morgan('dev'))
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'https://inventory-app-gold-psi.vercel.app',
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : []),
+]
 app.use(cors({
-  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:5173', 'http://localhost:4173'],
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin) || /\.vercel\.app$/.test(origin)) return cb(null, true)
+    cb(new Error('Not allowed by CORS'))
+  },
   credentials: true,
 }))
 app.use(express.json())
